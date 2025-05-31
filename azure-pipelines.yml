@@ -1,0 +1,114 @@
+trigger:
+  branches:
+    include:
+      - master
+
+variables:
+- group: test
+- name: AWS_PRIVATE_IP
+  value: '172.31.31.45'
+
+stages:
+- stage: PreRequisites
+  displayName: 'Pre-requisites'
+  jobs:
+  - job: PreReqJob
+    displayName: 'Prepare the EC2 Instance'
+    pool:
+      name: 'aws ec2'
+      demands:
+        - agent.name -equals cicd
+    steps:
+    - script: |
+        mkdir -p ~/.ssh
+        echo "$SSH_key" | tr -d '\r' > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H $(AWS_PRIVATE_IP) >> ~/.ssh/known_hosts
+      displayName: 'Setup SSH Key'
+      env:
+        SSH_key: $(SSH_KEY)
+
+    - script: |
+        ssh -o StrictHostKeyChecking=no ubuntu@$(AWS_PRIVATE_IP) << 'EOF'
+          rm -rf /home/ubuntu/Udemy-section*
+          git clone https://sagarkakkala@dev.azure.com/sagarkakkala/sagar2/_git/sagar2
+          cd Udemy-section8
+          chmod 744 build.sh
+          chmod 744 deploy.sh
+        EOF
+      displayName: 'Run Pre-Requisites'
+
+- stage: Build
+  dependsOn: PreRequisites
+  jobs:
+  - job: BuildJob
+    displayName: 'Run Build Script on EC2'
+    pool:
+      name: 'aws ec2'
+      demands:
+        - agent.name -equals cicd
+    steps:
+    - script: |
+        mkdir -p ~/.ssh
+        echo "$SSH_key" | tr -d '\r' > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H $(AWS_PRIVATE_IP) >> ~/.ssh/known_hosts
+      displayName: 'Setup SSH Key'
+      env:
+        SSH_key: $(SSH_key)
+
+    - script: |
+        ssh -o StrictHostKeyChecking=no ubuntu@$(AWS_PRIVATE_IP) "bash /home/ubuntu/sagar2/build.sh"
+      displayName: 'Build App'
+
+- stage: Deploy
+  dependsOn: Build
+  jobs:
+  - job: DeployJob
+    displayName: 'Run Deploy Script on EC2'
+    pool:
+      name: 'aws ec2'
+      demands:
+        - agent.name -equals cicd
+    steps:
+    - script: |
+        mkdir -p ~/.ssh
+        echo "$SSH_key" | tr -d '\r' > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H $(AWS_PRIVATE_IP) >> ~/.ssh/known_hosts
+      displayName: 'Setup SSH Key'
+      env:
+        SSH_key: $(SSH_key)
+
+    - script: |
+        ssh -o StrictHostKeyChecking=no ubuntu@$(AWS_PRIVATE_IP) "bash /home/ubuntu/sagar2/deploy.sh"
+      displayName: 'Deploy App'
+
+###Manual approaval####
+# - stage: Deploy
+#   dependsOn: Build
+#   jobs:
+#   - deployment: DeployJob
+#     displayName: 'Run Deploy Script on EC2'
+#     environment: test
+#     pool:
+#       name: 'aws ec2'
+#       demands:
+#         - agent.name -equals cicd
+#     strategy:
+#       runOnce:
+#         deploy:
+#           steps:
+#             - script: |
+#                 mkdir -p ~/.ssh
+#                 echo "$SSH_key" | tr -d '\r' > ~/.ssh/id_rsa
+#                 chmod 600 ~/.ssh/id_rsa
+#                 ssh-keyscan -H $(AWS_PRIVATE_IP) >> ~/.ssh/known_hosts
+#               displayName: 'Setup SSH Key'
+#               env:
+#                 SSH_key: $(SSH_key)
+
+#             - script: |
+#                 ssh -o StrictHostKeyChecking=no ubuntu@$(AWS_PRIVATE_IP) "bash /home/ubuntu/sagar2/deploy.sh"
+#               displayName: 'Deploy App'
+
