@@ -1,166 +1,214 @@
-# GitLab CI/CD: Using a Self-Hosted Runner on AWS
+# Azure Pipelines – Using AWS EC2 as a Self-Hosted Runner
 
-## 👤 Step 0: Create GitLab Account
-
-Start by creating a GitLab account using your existing email ID. You can then either:
-
-- Import your project from GitHub to GitLab
-- Or create a new repository directly in your GitLab account
-
-## 🔐 GitLab Token for Git Push
-
-Generate a **GitLab Personal Access Token** and use it for pushing code using the following format:
-
-```bash
-git push https://<username>:<token>@gitlab.com/sagarkakkala-group
-````
+This guide walks you through setting up an Azure DevOps pipeline that builds and deploys on an **AWS EC2 instance** using it as a **self-hosted agent**.
 
 ---
 
-## 🖥️ Step 1: Create AWS Instance and Setup SSH
+## 🔧 Step 1: Azure DevOps Setup
 
-1. Launch an AWS EC2 Instance to act as the self-hosted runner.
-2. Establish an SSH connection between the self-hosted server and the Demo Server.
+1. **Sign in to Azure** and search for **Azure DevOps**.
+2. **Create an Organization** (make it public if required).
+3. Inside the organization, **create a Project** – this will be your actual repository.
+4. We’ll use **Azure Pipelines only**, but the runner and deployment server will be on **AWS EC2**.
 
-## 🔑 Step 2: Generate SSH Key Pair
+---
+
+## 🔐 Step 2: AWS Prerequisites
+
+- Ensure **two EC2 instances** are set up:
+  - One as the **self-hosted runner**
+  - One as the **deployment server**
+- These two instances should be connected via **SSH**.
+
+---
+
+## 🔑 Step 3: Create Personal Access Token (PAT)
+
+1. Click on the ⚙️ **settings icon** beside your profile picture.
+2. Go to **"Personal Access Tokens"**.
+3. Generate a token with the following scopes:
+   - **Agent Pools** → Read & Manage
+   - **Code** → Read & Write
+
+---
+
+## 🤖 Step 4: Set Up Self-Hosted Agent on EC2
+
+1. Go to your Azure DevOps **Project Settings → Agent Pools → Add Pool**
+2. Name it (e.g., `aws ec2`) and **create the pool**.
+3. Click **“Add Agent”**, select **Linux**, and follow the instructions.
+4. SSH into your EC2 instance and run the following:
 
 ```bash
-ssh-keygen
+mkdir myagent && cd myagent
+curl -O https://download.agent.dev.azure.com/agent/4.255.0/vsts-agent-linux-x64-4.255.0.tar.gz
+tar xzvf vsts-agent-linux-x64-4.255.0.tar.gz
+./config.sh
 ```
 
-This generates a key pair at:
+- Enter the URL: `https://dev.azure.com/<your_organization_name>`
+- Use the **PAT token** for authentication
+- Enter the **pool name** and an **agent name**
 
-* `/home/ubuntu/.ssh/id_rsa` (private key)
-* `/home/ubuntu/.ssh/id_rsa.pub` (public key)
-
-Copy the public key content and paste it into the `authorized_keys` file on the Demo Server.
-
-## 🔁 Step 3: Test SSH Connection
+Start the agent:
 
 ```bash
-ssh ubuntu@{DemoServer_Private_IP}
-exit
+./run.sh
 ```
 
 ---
 
-## 💾 Step 4: Store Private Key as GitLab Variable
+## 🔐 Step 5: Add SSH Key to Azure DevOps
 
-Go to:
-
-`Settings → CI/CD → Variables`
-
-Paste the contents of your private key into a variable named:
-
-```text
-UBUNTU_SERVER_SSH
-```
+1. Go to **Pipelines → Library → Variable Groups**
+2. Create a new group (e.g., `test`)
+3. Add variable:
+   - **Name:** `SSH_KEY`
+   - **Value:** Paste your private SSH key content
+   - Enable **Keep this value secret**
 
 ---
 
-## ⚙️ Step 5: Set Up GitLab Runner
+## 🚀 Step 6: Create Azure Pipeline
 
-Navigate to:
+Assuming your Azure repo already has a `azure-pipelines.yml` file:
 
-`Settings → CI/CD → Runners`
+- Go to **Pipelines → Create Pipeline**
+- Select **Azure Repos**
+- Pick your repo
+- Choose **Existing YAML file**
 
-Follow the instructions provided and assign appropriate tags. Make sure the runner and the demo server can communicate via SSH.
-
-### 🧰 Install GitLab Runner
-
-```bash
-# Download the binary
-sudo curl -L --output /usr/local/bin/gitlab-runner https://gitlab-runner-downloads.s3.amazonaws.com/latest/binaries/gitlab-runner-linux-amd64
-
-# Make it executable
-sudo chmod +x /usr/local/bin/gitlab-runner
-
-# Create a user for GitLab Runner
-sudo useradd --comment 'GitLab Runner' --create-home gitlab-runner --shell /bin/bash
-
-# Install and start as a service
-sudo gitlab-runner install --user=gitlab-runner --working-directory=/home/gitlab-runner
-sudo gitlab-runner start
-```
-
-### 📝 Register the Runner
-
-```bash
-gitlab-runner register \
-  --url https://gitlab.com \
-  --token <your-registration-token>
-```
-
-Replace `<your-registration-token>` with your actual GitLab runner token.
-
----
-
-## 📄 Step 6: Create `.gitlab-ci.yml`
+### Example `azure-pipelines.yml`
 
 ```yaml
-stages:
-  - pre_requisites
-  - build
-  - deploy
+trigger:
+  branches:
+    include:
+      - master
 
 variables:
-  DEMO_SERVER: "172.31.30.63"  # Change to your private IP
+- group: test
+- name: AWS_PRIVATE_IP
+  value: '172.31.31.45'
 
-before_script:
-  - 'which ssh-agent || ( apt-get update -y && apt-get install openssh-client -y )'
-  - eval $(ssh-agent -s)
-  - echo "$UDEMY_SERVER_SSH_KEY" | tr -d '\r' | ssh-add -
-  - mkdir -p ~/.ssh
-  - chmod 700 ~/.ssh
-  - ssh-keyscan -H $AWS_PRIVATE_IP >> ~/.ssh/known_hosts
+stages:
+- stage: PreRequisites
+  displayName: 'Pre-requisites'
+  jobs:
+  - job: PreReqJob
+    displayName: 'Prepare the EC2 Instance'
+    pool:
+      name: 'aws ec2'
+      demands:
+        - agent.name -equals cicd
+    steps:
+    - script: |
+        mkdir -p ~/.ssh
+        echo "$SSH_key" | tr -d '\r' > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H $(AWS_PRIVATE_IP) >> ~/.ssh/known_hosts
+      displayName: 'Setup SSH Key'
+      env:
+        SSH_key: $(SSH_KEY)
 
-pre_requisites:
-  stage: pre_requisites
-  tags:
-    - agent
-    - cicd
-  script:
-    - |
-      ssh ubuntu@$AWS_PRIVATE_IP << 'EOF'
-        rm -rf /home/ubuntu/udemy-section7
-        git clone https://gitlab.com/sagarkakkala-group/Udemy-section6.git
-        cd udemy-section7
+    - script: |
+        ssh -o StrictHostKeyChecking=no ubuntu@$(AWS_PRIVATE_IP) << 'EOF'
+        rm -rf /home/ubuntu/Udemy-section*
+        git clone https://<your-username>@dev.azure.com/<org>/<project>/_git/<repo>
+        cd <your-cloned-folder>
         chmod 744 build.sh
         chmod 744 deploy.sh
-      EOF
+        EOF
+      displayName: 'Run Pre-Requisites'
 
-build:
-  stage: build
-  tags:
-    - agent
-    - cicd
-  needs: ["pre_requisites"]
-  script:
-    - ssh ubuntu@$AWS_PRIVATE_IP "bash /home/ubuntu/Udemy-section6/build.sh"
+- stage: Build
+  dependsOn: PreRequisites
+  jobs:
+  - job: BuildJob
+    displayName: 'Run Build Script on EC2'
+    pool:
+      name: 'aws ec2'
+      demands:
+        - agent.name -equals cicd
+    steps:
+    - script: |
+        mkdir -p ~/.ssh
+        echo "$SSH_key" | tr -d '\r' > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H $(AWS_PRIVATE_IP) >> ~/.ssh/known_hosts
+      displayName: 'Setup SSH Key'
+      env:
+        SSH_key: $(SSH_KEY)
 
-deploy:
-  stage: deploy
-  tags:
-    - agent
-    - cicd
-  needs: ["build"]
-  script:
-    - ssh ubuntu@$AWS_PRIVATE_IP "bash /home/ubuntu/Udemy-section6/deploy.sh"
+    - script: |
+        ssh -o StrictHostKeyChecking=no ubuntu@$(AWS_PRIVATE_IP) "bash /home/ubuntu/<repo>/build.sh"
+      displayName: 'Build App'
+
+- stage: Deploy
+  dependsOn: Build
+  jobs:
+  - job: DeployJob
+    displayName: 'Run Deploy Script on EC2'
+    pool:
+      name: 'aws ec2'
+      demands:
+        - agent.name -equals cicd
+    steps:
+    - script: |
+        mkdir -p ~/.ssh
+        echo "$SSH_key" | tr -d '\r' > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H $(AWS_PRIVATE_IP) >> ~/.ssh/known_hosts
+      displayName: 'Setup SSH Key'
+      env:
+        SSH_key: $(SSH_KEY)
+
+    - script: |
+        ssh -o StrictHostKeyChecking=no ubuntu@$(AWS_PRIVATE_IP) "bash /home/ubuntu/<repo>/deploy.sh"
+      displayName: 'Deploy App'
 ```
 
-### This pipeline performs three main stages:
+---
 
-* **pre\_requisites**: Clones the repo and sets file permissions
-* **build**: Executes the `build.sh` script
-* **deploy**: Executes the `deploy.sh` script
+## ✅ Optional: Manual Approval Before Deploy
+
+Uncomment below if you want **manual approval**:
+
+```yaml
+# - stage: Deploy
+#   dependsOn: Build
+#   jobs:
+#   - deployment: DeployJob
+#     displayName: 'Run Deploy Script on EC2'
+#     environment: production
+#     pool:
+#       name: 'aws ec2'
+#       demands:
+#         - agent.name -equals cicd
+#     strategy:
+#       runOnce:
+#         deploy:
+#           steps:
+#             ...
+```
+
+---
+
+## ✅ Summary
+
+You’ve now successfully:
+
+- Set up an Azure DevOps organization and project
+- Connected an AWS EC2 instance as a self-hosted runner
+- Created a multi-stage pipeline with SSH key management
+- Built and deployed code using shell scripts from Azure Pipelines
 
 ---
 
 ## 🔗 Connect with Me
 
-I post content related to contrafactums, fun vlogs, travel stories, DevOps and more. Use the link below for all access:
+I post content related to contrafactums, fun vlogs, travel stories, DevOps and more.
 
-[🌐 Sagar Kakkala One Stop](https://linktr.ee/sagar_kakkalas_world)
+👉 [Sagar Kakkala One Stop](https://linktr.ee/sagar_kakkalas_world)
 
 🖊 Feedback, queries, and suggestions are welcome in the comments.
-
